@@ -1,0 +1,223 @@
+module powerbi.visuals {
+    import ClassAndSelector = jsCommon.CssConstants.ClassAndSelector;
+    import SelectionManager = utility.SelectionManager;
+
+    export class SuperBubbles implements IVisual {
+        public static capabilities: VisualCapabilities = {
+            dataRoles: [
+                {
+                    name: 'Category',
+                    kind: powerbi.VisualDataRoleKind.Grouping,
+                    displayName: 'Nodes'
+                },
+                {
+                    name: 'Y',
+                    kind: powerbi.VisualDataRoleKind.Measure,
+                    displayName: data.createDisplayNameGetter('Role_DisplayName_Values'),
+                },
+            ],
+            dataViewMappings: [{
+                conditions: [{ 'Y': {max: 1}}],
+                matrix: {
+                    rows: { for: { in: 'Category' } },
+                    values: { for: { in: 'Y' } }
+                }
+            }],
+            objects: {
+                general: {
+                    displayName: data.createDisplayNameGetter('Visual_General'),
+                    properties: {
+                        formatString: {
+                            type: { formatting: { formatString: true } },
+                        },
+                    },
+                },
+                label: {
+                    displayName: 'Label',
+                    properties: {
+                        fill: {
+                            displayName: 'Fill',
+                            type: { fill: { solid: { color: true } } }
+                        }
+                    }
+                },
+            }
+        };
+
+        private static VisualClassName = 'Bubble';
+        private static Circle: ClassAndSelector = {
+            class: 'bubble',
+            selector: '.bubble'
+        }
+
+        private svg: D3.Selection;
+        private mainGroupElement: D3.Selection;
+        private colors: IDataColorPalette;
+        private selectionManager: SelectionManager;
+        private dataView: DataView;
+        private bubble: D3.Layout.PackLayout;
+
+        public static converter(dataView: DataView, colors: IDataColorPalette): any {
+            if (!dataView || !dataView.tree || !dataView.tree.root.value)
+                return null;
+            return dataView.tree.root;
+        }
+
+        public init(options: VisualInitOptions): void {
+            this.selectionManager = new SelectionManager({ hostServices: options.host });
+            var element = options.element;
+            this.selectionManager = new SelectionManager({ hostServices: options.host });
+            this.svg = d3.select(element.get(0))
+                .append('svg')
+                .classed(SuperBubbles.VisualClassName, true);
+
+            this.mainGroupElement = this.svg.append('g');
+
+            this.colors = options.style.colorPalette.dataColors;
+        }
+
+        public update(options: VisualUpdateOptions) {
+            if (!options.dataViews || !options.dataViews[0]) return; // or clear the view, display an error, etc.
+            var selectionManager = this.selectionManager;
+            var height = options.viewport.height;
+            var width = options.viewport.width;
+            var useHeight = height < width;
+
+            var diameter = (useHeight ? height : width) | 0,
+                format = d3.format(",d");
+
+            var pack = d3.layout.pack()
+                .sort(null)
+                .size([diameter, diameter])
+                .value(function (d) { return d.value; });
+
+            this.svg
+                .attr("width", width)
+                .attr("height", height)
+            this.mainGroupElement
+                .attr("transform",
+                SVGUtil.translate(useHeight ? (width - diameter) / 2 : 0, useHeight ? 0 : (height - diameter) / 2));
+
+            var dataView = options.dataViews[0];
+            var rootNode = SuperBubbles.converter(dataView, null);
+            if (!rootNode) {
+                this.mainGroupElement.remove();
+                return;
+            }
+            var nodeSelection = this.mainGroupElement.datum(rootNode)
+                .selectAll(".node")
+                .data(pack.nodes)
+
+            var newNodeGroup = nodeSelection.enter().append("g");
+            newNodeGroup.append("circle")
+            newNodeGroup.append("text");
+
+            nodeSelection
+                .attr("class", d => d.children ? "node" : "leaf node")
+                .attr("transform", function (d) { return "translate(" + d.x + "," + d.y + ")"; });
+
+            nodeSelection
+                .select('circle')
+                .attr("r", d => d.r)
+                .style('fill',(d, i) => d.children ? 'rgba(100,10,200,0.2)' : this.colors.getColorScaleByKey(d.name).getColor(i).value)
+                .on('click', function (d) {
+                var e = SelectionId.createWithId(d.identity);
+                selectionManager.select(e).then((ids) => {
+                    if (ids.length > 0) {
+                        nodeSelection.select('circle').style('opacity', 0.5);
+                        d3.select(this).style('opacity', 1);
+                    } else {
+                        nodeSelection.select('circle').style('opacity', 1);
+                    }
+                })
+                d3.event.stopPropagation();
+            });
+
+            nodeSelection.select('text').style('opacity', d=> d.children ? 0 : 1)
+
+            nodeSelection
+                .select('text')
+                .attr("dy", ".3em")
+                .style("text-anchor", "middle")
+                .style('fill', this.getLabelFill(options.dataViews[0]).solid.color)
+                .text(d => TextMeasurementService.getTailoredTextOrDefault({
+                text: d && d.name ? d.name : '',
+                fontSize: '10px',
+                fontFamily: 'san-serif'
+            }, d.r));
+
+            nodeSelection
+                .exit()
+                .transition()
+                .duration(250)
+                .select('circle').attr('r', 0)
+
+            nodeSelection
+                .exit()
+                .select('text').remove()
+
+            nodeSelection
+                .exit()
+                .transition()
+                .delay(250)
+                .remove();
+            
+            var formatStringProp = <DataViewObjectPropertyIdentifier>{
+                    objectName: "general",
+                    propertyName: "formatString"
+                };
+            var formatter = powerbi.visuals.valueFormatter.create({
+                format: powerbi.visuals.valueFormatter.getFormatString(dataView.matrix.valueSources[0], formatStringProp),
+                value: dataView.tree.root.value,
+            });
+
+            TooltipManager.addTooltip(nodeSelection,(tooltipEvent: TooltipEvent) => {
+                var val = tooltipEvent.data.value;
+                var valStr = formatter.format(val);
+
+                var info = [{
+                    displayName: 'Name',
+                    value: tooltipEvent.data.name,
+                }, {
+                        displayName: 'Value',
+                        value: valStr,
+                    }]
+                return info;
+            });
+        }
+
+        // This extracts fill color of the label from the DataView
+        private getLabelFill(dataView: DataView): Fill {
+            if (dataView && dataView.metadata.objects) {
+                var label = dataView.metadata.objects['label'];
+                if (label) {
+                    return <Fill>label['fill'];
+                }
+            }
+
+            return { solid: { color: '#FFF' } };
+        }
+        
+        // This function retruns the values to be displayed in the property pane for each object.
+        // Usually it is a bind pass of what the property pane gave you, but sometimes you may want to do
+        // validation and return other values/defaults
+        public enumerateObjectInstances(options: EnumerateVisualObjectInstancesOptions): VisualObjectInstance[] {
+            var instances: VisualObjectInstance[] = [];
+            switch (options.objectName) {
+                case 'label':
+                    var label: VisualObjectInstance = {
+                        objectName: 'label',
+                        displayName: 'Label',
+                        selector: null,
+                        properties: {
+                            fill: this.getLabelFill(this.dataView)
+                        }
+                    };
+                    instances.push(label);
+                    break;
+
+            }
+            return instances;
+        }
+    }
+}
