@@ -124,7 +124,7 @@ module powerbi.visuals {
                     value: values[0].values[i],
                     packageName: "main",
                     label: catValues[i],
-                    color: colors.getColorByIndex(i).value,
+                    color: #660000,
                     selector: SelectionId.createWithId(cat.identity[i]),
                     tooltipInfo: [{
                         displayName: formattedCategoryValue,
